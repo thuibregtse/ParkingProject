@@ -105,17 +105,16 @@ void setup()
 
     delay(500);
 
-    Console.println(F("VL53L0X Parking guide with ESP8266\n"));
+    Console.println(F("ToF Parking Assistant\n"));
 
     // int loxStartLimit = 100;
     // int loxStartTries = 0;
     // bool loxIsStarted = false;
 
-
     if (!lox.begin())
     {
         delay(50);
-        Serial.println(F("Failed to boot VL53L0X"));
+        Serial.println(F("Failed to boot VL53L0X ToF Sensor"));
         strip.setPixelColor(2, 64, 0, 0); // 2nd LED: red for lox is not started
         strip.show();
         while (1)
@@ -123,7 +122,7 @@ void setup()
     }
     else
     {
-        Serial.println(F("Successfully started VL53L0X"));
+        Serial.println(F("Successfully started VL53L0X ToF Sensor"));
         strip.setPixelColor(2, 0, 64, 0); // next LED: green for lox is  started
         strip.show();
         delay(1000);
@@ -135,17 +134,16 @@ void setup()
 
 
 
-
-void ledShowNotCalibrated() {
+void ledShowNotCalibrated() {  // Every other LED is red if calabration has not been done yet.
     for (int i=0; i<= PixelCount; i=i+2) {
         strip.setPixelColor(i, 128, 0, 0);
     }
     strip.show();
 }
 
-void ledShowCalibrationFailure () {
+void ledShowCalibrationFailure () {  // All blue for calibration failure
     for (int i=0; i<= PixelCount; i=i+2) {
-        strip.setPixelColor(i, 0, 0, 128);  // All blue for calibration failure
+        strip.setPixelColor(i, 0, 0, 128);  
     }
     strip.show();
 }
@@ -155,9 +153,9 @@ int redRange, yellowRange, greenRange, maxSensorRange;
 void doRangeCalibration()
 {
     VL53L0X_RangingMeasurementData_t measure;
-    if (calibratingNotice == false)
+    if (calibratingNotice == false)  // only need to say this once per button press
     {
-        Serial.println("Calibrating stop point"); // only need to say this once per button press
+        Serial.println("Calibrating stop point"); 
         calibratingNotice = true;
     }
 
@@ -167,8 +165,10 @@ void doRangeCalibration()
         range = measure.RangeMilliMeter;
         if (range == 0)
         {
-            Serial.println("Nothing in range.  I need something to calibrate against");
-            calibrationNeedsTargetNotice = true; // Only need to say this once per button press
+            if (calibrationNeedsTargetNotice == false) {
+                Serial.println("Nothing in range.  I need something to calibrate against");
+                calibrationNeedsTargetNotice = true; // Only need to say this once per button press
+            }
         }
         else
         {
@@ -178,22 +178,16 @@ void doRangeCalibration()
             // always be available in mm
 
             // For the neopixel strip my implementation uses the last 1/3 of the strip to show (in red) how far you are past the stop point.
-            // Might add a TOO CLOSE indicator if range is dangerously close to the sensor.
+            // Might add a TOO CLOSE indicator like blinking light if range is dangerously close to the sensor.
 
             redRange = range;
             // So, let's take the calibration distance, and extrapolate the "green" and "yellow" distances.
 
             yellowRange = range * 2; // Middle 1/3 of neopixel strip
             greenRange = range * 3;  // First 1/3 of neopixel strip
-            maxSensorRange = greenRange;  // Measurements beyond this are clipped to first green LED
+            maxSensorRange = greenRange;  // Measurements beyond the green range are clipped to first green LED
 
-            // Now let's figure out how many mm/LED so we can scale for the display
-
-           // Serial.print("I have this many LEDs:");
-           // Serial.print(PixelCount / 3);
-           // Serial.print(" to show the range ");
-           // Serial.print(redRange);
-
+            // Use pixelCount to determine how many mm are represented by each lit pixel
             mmPerLed = (int)(redRange / (PixelCount / 3));
 
             sprintf(printBuffer, "Calibrated Red=%d Yellow=%d Green=%d  mmPerLed=%d  max=%d", redRange, yellowRange, greenRange, mmPerLed, maxSensorRange);
@@ -212,27 +206,34 @@ void showRangeOnLedStrip(int value)
     if (value != oldValue)
     {
         oldValue = value;
-        int lightCount = PixelCount - value;
         Serial.print("Will show ");
-        Serial.print(lightCount);
-        Serial.println("lights");
+        Serial.print(value);
+        Serial.println(" lights");
 
         strip.clear();
-        for (int i = 0; i < lightCount; i++)
+        strip.show();
+
+        if (value == 0)
+            Serial.print("There should be NO leds active");
+        else
         {
-            if (i > 14)
+            for (int i = 0; i < value; i++)
             {
-                strip.setPixelColor(i, 32, 0, 0); // dimmer white
-                strip.show();
-            }
-            else if (i > 7)
-            {
-                strip.setPixelColor(i, 32, 32, 0); // dimmer white
-                strip.show();
-            }
-            else
-            {
-                strip.setPixelColor(i, 0, 32, 0); // dimmer white
+                if (i > 14)
+                {
+                    strip.setPixelColor(i, 32, 0, 0); // red
+
+                }
+                else if (i > 7)
+                {
+                    strip.setPixelColor(i, 32, 32, 0); // yellow
+
+                }
+                else
+                {
+                    strip.setPixelColor(i, 0, 32, 0); // green
+
+                }
                 strip.show();
             }
         }
@@ -248,12 +249,11 @@ void ledShowCalibrated() {
         range = measure.RangeMilliMeter;
         if (range > maxSensorRange) 
             range = maxSensorRange;
-        Serial.print(range);
-        Serial.print ("  ");
         int ledDistance = (int)(range / mmPerLed);
-        sprintf (printBuffer, "Range: %d   mmPerLed:%d   Active LEDs: %d", range, mmPerLed, ledDistance);
+        // Subtract ledDistance from PixelCount, because we're lighting more LEDs as we get closer (smaller ToF value, more lights)
+        sprintf (printBuffer, "Range: %d   mmPerLed:%d   Active LEDs: %d", range, mmPerLed, PixelCount - ledDistance);
         Serial.println (printBuffer);
-        showRangeOnLedStrip(ledDistance);
+        showRangeOnLedStrip(PixelCount - ledDistance);
     }
     else
         Serial.println ("Ranging error");
@@ -268,19 +268,7 @@ void ledShowCalibrated() {
 void loop()
 {
     //uint16_t ledPrevNum = 0, ledNum = 0, range = 0;
-    //char str[12];
   
-    //range++;
-    //ledNum++;
-    //ledPrevNum++;
-
-    //strip.setPixelColor(0, 64, 64, 64); // white
-    //strip.show();
-    //delay(90);
-    ///strip.setPixelColor(0, 32, 32, 32); // dimmer white
-    ///strip.show();
-
-
 // Has the calibration button been pressed
     calSwitchStatus = digitalRead (CalibrationPin);
     if (calSwitchStatus == 0) {
@@ -307,66 +295,7 @@ void loop()
         ledShowCalibrationFailure();
 
 
-//if (oldCalSwitchStatus != calSwitchStatus) {
-//    sprintf (printBuffer, "BUTTON STATE went from %d to %d", oldCalSwitchStatus, calSwitchStatus);
-//    Serial.print (printBuffer);
-//}
-//    delay (100);
 
 
-/*
 
-    else {  // Normal ping and display routine}
-            lox.rangingTest(&measure, false);
-
-            if (measure.RangeStatus != 4)
-            { // We have a valid return value
-                range = measure.RangeMilliMeter;
-                sprintf(str, "% 5d", range);
-                Serial.println( str);
-                if (range > MaxRange)
-                    range = MaxRange;
-
-                ledNum = ((uint32_t)range * (PixelCount - 1) / MaxRange); // Normalize range to pixel
-                sprintf (printBuffer, "D=%d  LED=%d", range, ledNum);
-             
-                // Need to adjust so first 1/3 is green, second is yellow, third is red.
-            }
-
-            else
-            {
-                strip.setPixelColor(0, 128, 128, 128);
-                // Serial.println("Setting first pixel to white");
-                strcpy(str, "  ---");
-            }
-
-            delay(30);
-            int StartRedZone = 300;
-            int StartYellowZone = 600;
-
-            // There's just no stopping in the red zone....
-
-            // Update the strip if new value
-            if (ledNum != ledPrevNum)
-            {
-                strip.clear();
-                if (range < StartRedZone)
-                {                                           // 1ft
-                    strip.setPixelColor(ledNum, 128, 0, 0); // red
-                }
-                else if (range < StartYellowZone)
-                {                                             // 2ft
-                    strip.setPixelColor(ledNum, 128, 128, 0); // yellow
-                }
-                else
-                {
-                    strip.setPixelColor(ledNum, 0, 128, 0); // green
-                }
-                ledPrevNum = ledNum;
-            }
-            strip.show();
-
-            /// delay(1000);
-        }
-        */
 }
