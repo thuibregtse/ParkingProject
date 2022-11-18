@@ -9,14 +9,33 @@
 #include <Wire.h>
 #define Console Serial           // command processor input/output stream
 
-const uint16_t PixelCount = 20;
+const uint16_t PixelCount = 21;
 const uint16_t PixelPin = D4;
 const uint16_t CalibrationPin = D5;  // Used to set yellow/red transition distance
 const uint16_t MaxRange = 1200;  // Units mm
 
-int calSwitchStatus = 0;
+int calSwitchStatus = 0; // Init button state to not pressed
 
-char printBuffer[40];
+int mmPerLed = -1;
+// Various states of calibration
+
+
+const int NOTCALIBRATED = 0;
+const int CALIBRATING = 1;
+const int CALIBRATED = 2;
+const int CALFAILURE = 3;
+
+int calibrationState = NOTCALIBRATED;
+
+int range = -1;
+
+boolean notCalibratedYetNotice = false;
+boolean calibratingNotice = false;
+boolean calibrationNeedsTargetNotice = false;
+
+
+
+char printBuffer[80];
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 //Adafruit_NeoPixel strip = Adafruit_NeoPixel(PixelCount, PixelPin, NEO_GRB + NEO_KHZ800);
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(PixelCount, PixelPin, NEO_GRB);
@@ -24,46 +43,46 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(PixelCount, PixelPin, NEO_GRB);
 //int GreenLedRange = (int) PixelCount * 33;
 //int YellowLedRange = (int) PixelCount * 0.66;
 
-int GreenLedRange = 7;
-int YellowLedRange = 14;
+int GreenLedRange = (int)(PixelCount / 3); // First third is green
+int YellowLedRange = GreenLedRange * 2;    // Second third is yellow
+int RedLedRange = YellowLedRange + GreenLedRange;  // Last third is red
+
 // Strip is divided into 3 equal sizes, green, yellow, and red
 //  "Stop" zone is when you are in the red area
 
 
-int stopRange = 0;
 
 void testStrip()
 {
-
-int pauseTime = 100;
-
+int pauseTime = 10;
     for (int i = 0; i < GreenLedRange; i++)
     {
         strip.setPixelColor(i, 0, 64, 0);
         strip.show();
         delay (pauseTime);
     }
-
     for (int i = GreenLedRange; i < YellowLedRange; i++)
     {
-        strip.setPixelColor(i, 64, 0, 64);
+        strip.setPixelColor(i, 0, 64, 64);
         strip.show();
         delay (pauseTime);
     }
-
     for (int i = YellowLedRange; i < PixelCount; i++)
     {
         strip.setPixelColor(i, 64, 0, 0);
         strip.show();
         delay (pauseTime);
     }
-
-    delay(500);
+    delay(200);
     strip.clear();
 }
 
 void setup()
 {
+
+    // CalibrationPin input will be used to set the stop distance
+    pinMode(CalibrationPin, INPUT_PULLUP);     // set pin to input
+    digitalWrite(CalibrationPin, HIGH); // turn on pullup resistors
 
     Console.begin(115200);
     while (!Serial)
@@ -71,9 +90,12 @@ void setup()
         delay(1);
     }
 
-    // CalibrationPin input will be used to set the stop distance
-    pinMode(CalibrationPin, INPUT_PULLUP);     // set pin to input
-    digitalWrite(CalibrationPin, HIGH); // turn on pullup resistors
+    Serial.print ("Initial greenLedRange: ");
+    Serial.println (GreenLedRange);
+
+    Serial.print ("Initial yellowLedRange: ");
+    Serial.println (YellowLedRange);
+
 
     strip.begin(); //
     strip.clear(); //
@@ -81,13 +103,14 @@ void setup()
 
     testStrip();
 
-    delay(50);
+    delay(500);
 
-    Console.println(F("VL53L0X API Simple Ranging example\n\n"));
+    Console.println(F("VL53L0X Parking guide with ESP8266\n"));
 
     // int loxStartLimit = 100;
     // int loxStartTries = 0;
     // bool loxIsStarted = false;
+
 
     if (!lox.begin())
     {
@@ -110,78 +133,189 @@ void setup()
     }
 }
 
+
+
+
+void ledShowNotCalibrated() {
+    for (int i=0; i<= PixelCount; i=i+2) {
+        strip.setPixelColor(i, 128, 0, 0);
+    }
+    strip.show();
+}
+
+void ledShowCalibrationFailure () {
+    for (int i=0; i<= PixelCount; i=i+2) {
+        strip.setPixelColor(i, 0, 0, 128);  // All blue for calibration failure
+    }
+    strip.show();
+}
+
+int redRange, yellowRange, greenRange, maxSensorRange;
+
+void doRangeCalibration()
+{
+    VL53L0X_RangingMeasurementData_t measure;
+    if (calibratingNotice == false)
+    {
+        Serial.println("Calibrating stop point"); // only need to say this once per button press
+        calibratingNotice = true;
+    }
+
+    lox.rangingTest(&measure, false); // Request a measurement
+    if (measure.RangeStatus != 4)
+    { // We have a valid return value
+        range = measure.RangeMilliMeter;
+        if (range == 0)
+        {
+            Serial.println("Nothing in range.  I need something to calibrate against");
+            calibrationNeedsTargetNotice = true; // Only need to say this once per button press
+        }
+        else
+        {
+            // Calibration explanation
+            // When the user holds the button, a series of measurements set the "stop" zone, and record that in mm.
+            // We want to support different display mechanimsm (neopixel, servo, 7-segment, etc), so latest measurement will
+            // always be available in mm
+
+            // For the neopixel strip my implementation uses the last 1/3 of the strip to show (in red) how far you are past the stop point.
+            // Might add a TOO CLOSE indicator if range is dangerously close to the sensor.
+
+            redRange = range;
+            // So, let's take the calibration distance, and extrapolate the "green" and "yellow" distances.
+
+            yellowRange = range * 2; // Middle 1/3 of neopixel strip
+            greenRange = range * 3;  // First 1/3 of neopixel strip
+            maxSensorRange = greenRange;  // Measurements beyond this are clipped to first green LED
+
+            // Now let's figure out how many mm/LED so we can scale for the display
+
+           // Serial.print("I have this many LEDs:");
+           // Serial.print(PixelCount / 3);
+           // Serial.print(" to show the range ");
+           // Serial.print(redRange);
+
+            mmPerLed = (int)(redRange / (PixelCount / 3));
+
+            sprintf(printBuffer, "Calibrated Red=%d Yellow=%d Green=%d  mmPerLed=%d  max=%d", redRange, yellowRange, greenRange, mmPerLed, maxSensorRange);
+            Serial.println(printBuffer);
+        }
+        calibrationState = CALIBRATED;
+    }
+}
+
+int oldValue = -1;
+
+void showRangeOnLedStrip(int value)
+{
+    //  We need to show the inverse of the number of LEDs
+
+    if (value != oldValue)
+    {
+        oldValue = value;
+        int lightCount = PixelCount - value;
+        Serial.print("Will show ");
+        Serial.print(lightCount);
+        Serial.println("lights");
+
+        strip.clear();
+        for (int i = 0; i < lightCount; i++)
+        {
+            if (i > 14)
+            {
+                strip.setPixelColor(i, 32, 0, 0); // dimmer white
+                strip.show();
+            }
+            else if (i > 7)
+            {
+                strip.setPixelColor(i, 32, 32, 0); // dimmer white
+                strip.show();
+            }
+            else
+            {
+                strip.setPixelColor(i, 0, 32, 0); // dimmer white
+                strip.show();
+            }
+        }
+    }
+}
+
+void ledShowCalibrated() {
+    VL53L0X_RangingMeasurementData_t measure;
+
+    delay(200);
+    lox.rangingTest(&measure, false);
+    if (measure.RangeStatus != 4) { // We have a valid return value  
+        range = measure.RangeMilliMeter;
+        if (range > maxSensorRange) 
+            range = maxSensorRange;
+        Serial.print(range);
+        Serial.print ("  ");
+        int ledDistance = (int)(range / mmPerLed);
+        sprintf (printBuffer, "Range: %d   mmPerLed:%d   Active LEDs: %d", range, mmPerLed, ledDistance);
+        Serial.println (printBuffer);
+        showRangeOnLedStrip(ledDistance);
+    }
+    else
+        Serial.println ("Ranging error");
+    //delay (600);
+
+}
+
+
+
+
+
 void loop()
 {
-    uint16_t ledPrevNum = 0, ledNum = 0, range = 0;
-    range++;
-    ledNum++;
-    ledPrevNum++;
+    //uint16_t ledPrevNum = 0, ledNum = 0, range = 0;
+    //char str[12];
+  
+    //range++;
+    //ledNum++;
+    //ledPrevNum++;
 
-    strip.setPixelColor(0, 64, 64, 64); // white
-    strip.show();
-    delay(90);
+    //strip.setPixelColor(0, 64, 64, 64); // white
+    //strip.show();
+    //delay(90);
     ///strip.setPixelColor(0, 32, 32, 32); // dimmer white
     ///strip.show();
 
-    char str[12];
-    VL53L0X_RangingMeasurementData_t measure;
 
-
-
-    // First business....if the value of "stopRange" has not been set, 
-    // indicate on strip that no calibration has been done...do not trust strip output
-
+// Has the calibration button been pressed
     calSwitchStatus = digitalRead (CalibrationPin);
-    sprintf (printBuffer, "BUTTON STATE=%d", calSwitchStatus);
-    //Serial.print (printBuffer);
-    delay (100);
-    if ((stopRange == 0) ||  (calSwitchStatus == 0))// or if button has been pressed to re-calibrate
-    { // Could also set a persistent variable that button has been used.
-    Serial.println ("Device is either not calibrated, or the calibration button has been pressed");
-        strip.setPixelColor(0, 128, 0, 0);
-        strip.setPixelColor(2, 128, 0, 0);
-        strip.setPixelColor(4, 128, 0, 0);
-        strip.setPixelColor(6, 128, 0, 0);
-        strip.setPixelColor(8, 128, 0, 0);
-        strip.show();
+    if (calSwitchStatus == 0) {
+        calibrationState = CALIBRATING;
+        calibratingNotice = false;  // Reset to allow messages
+    }
 
-        // Wait until calibration button has been pressed
-
-        if (calSwitchStatus == 0)
-        { // btn has been pressed
-            Serial.println("Calibrating stop point");  // only need to say this once per button press
-            strip.setPixelColor(YellowLedRange + 1, 0, 0, 128);
-            strip.show();
-            while (calSwitchStatus == 0)
-            {
-                //  Ping until button is released
-                //Serial.println(calSwitchStatus);
-
-                if (measure.RangeStatus != 4)
-                { // We have a valid return value
-                    lox.rangingTest(&measure, false);
-                    range = measure.RangeMilliMeter;
-                    Serial.println(range);
-                    if (range != 0) {
-                        stopRange = range;
-                        sprintf(printBuffer, "stopRange has been set to %d", stopRange);
-                    Serial.println(printBuffer);
-                    }
-                    else {
-                        Serial.println("Range is 0.  I need something to calibrate against");
-                    }
-                    // Anything between 0 and stopRange will be indicated in red section of LED strip
-                }
-                calSwitchStatus = digitalRead(CalibrationPin);
-                //Serial.print ("BUTTON STATE");
-                //Serial.println (calSwitchStatus);
-                delay(20);
-            }
-            strip.setPixelColor(YellowLedRange + 1, 128, 128, 128);
-            strip.show();
-            delay(30);
+    if (calibrationState == NOTCALIBRATED) {
+        if (notCalibratedYetNotice == false) {
+            Serial.print ("Not calibrated yet");
+            ledShowNotCalibrated();
+            notCalibratedYetNotice = true;
         }
     }
+
+    else if (calibrationState == CALIBRATING) {
+        Serial.println ("Calibrating");
+        doRangeCalibration();
+        delay (1000);
+    }
+    else if (calibrationState == CALIBRATED)
+        ledShowCalibrated();  // Normal ranging routine after calibration
+    else
+        ledShowCalibrationFailure();
+
+
+//if (oldCalSwitchStatus != calSwitchStatus) {
+//    sprintf (printBuffer, "BUTTON STATE went from %d to %d", oldCalSwitchStatus, calSwitchStatus);
+//    Serial.print (printBuffer);
+//}
+//    delay (100);
+
+
+/*
+
     else {  // Normal ping and display routine}
             lox.rangingTest(&measure, false);
 
@@ -234,4 +368,5 @@ void loop()
 
             /// delay(1000);
         }
+        */
 }
