@@ -34,42 +34,27 @@ boolean calibratingNotice = false;
 boolean calibrationNeedsTargetNotice = false;
 
 
-
+int redRange, yellowRange, greenRange, maxSensorRange;
 char printBuffer[80];
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
-//Adafruit_NeoPixel strip = Adafruit_NeoPixel(PixelCount, PixelPin, NEO_GRB + NEO_KHZ800);
+
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(PixelCount, PixelPin, NEO_GRB);
 
-//int GreenLedRange = (int) PixelCount * 33;
-//int YellowLedRange = (int) PixelCount * 0.66;
 
+// Determine which pixels will be green, yellow, or red
 int GreenLedRange = (int)(PixelCount / 3); // First third is green
 int YellowLedRange = GreenLedRange * 2;    // Second third is yellow
 int RedLedRange = YellowLedRange + GreenLedRange;  // Last third is red
 
-// Strip is divided into 3 equal sizes, green, yellow, and red
-//  "Stop" zone is when you are in the red area
 
 
 
 void testStrip()
 {
 int pauseTime = 10;
-    for (int i = 0; i < GreenLedRange; i++)
+    for (int i = 0; i < PixelCount; i++)
     {
-        strip.setPixelColor(i, 0, 64, 0);
-        strip.show();
-        delay (pauseTime);
-    }
-    for (int i = GreenLedRange; i < YellowLedRange; i++)
-    {
-        strip.setPixelColor(i, 0, 64, 64);
-        strip.show();
-        delay (pauseTime);
-    }
-    for (int i = YellowLedRange; i < PixelCount; i++)
-    {
-        strip.setPixelColor(i, 64, 0, 0);
+        strip.setPixelColor(i, 32, 32, 32);
         strip.show();
         delay (pauseTime);
     }
@@ -80,32 +65,34 @@ int pauseTime = 10;
 void setup()
 {
 
-    // CalibrationPin input will be used to set the stop distance
-    pinMode(CalibrationPin, INPUT_PULLUP);     // set pin to input
-    digitalWrite(CalibrationPin, HIGH); // turn on pullup resistors
-
     Console.begin(115200);
     while (!Serial)
     {
         delay(1);
     }
 
+    // When the Calibrate button is pushed, we will set the range to the yellow/red transition point
+    // This inforation will be stored in pseudo-eeprom on the nodemcu]
+
+    pinMode(CalibrationPin, INPUT_PULLUP);     // set pin to input
+    digitalWrite(CalibrationPin, HIGH); // turn on pullup resistors
+
+
+/*
     Serial.print ("Initial greenLedRange: ");
     Serial.println (GreenLedRange);
 
     Serial.print ("Initial yellowLedRange: ");
     Serial.println (YellowLedRange);
-
-
+*/
     strip.begin(); //
     strip.clear(); //
     strip.show();  //
 
     testStrip();
-
     delay(500);
 
-    Console.println(F("ToF Parking Assistant\n"));
+    Serial.println("ToF Parking Assistant\n");
 
     // int loxStartLimit = 100;
     // int loxStartTries = 0;
@@ -117,7 +104,7 @@ void setup()
         Serial.println(F("Failed to boot VL53L0X ToF Sensor"));
         strip.setPixelColor(2, 64, 0, 0); // 2nd LED: red for lox is not started
         strip.show();
-        while (1)
+        while (1)// On failure, do nothing forever
             ;
     }
     else
@@ -133,7 +120,6 @@ void setup()
 }
 
 
-
 void ledShowNotCalibrated() {  // Every other LED is red if calabration has not been done yet.
     for (int i=0; i<= PixelCount; i=i+2) {
         strip.setPixelColor(i, 128, 0, 0);
@@ -141,21 +127,19 @@ void ledShowNotCalibrated() {  // Every other LED is red if calabration has not 
     strip.show();
 }
 
-void ledShowCalibrationFailure () {  // All blue for calibration failure
+void ledShowCalibrationFailure () {  // Every other LED blue for calibration failure
     for (int i=0; i<= PixelCount; i=i+2) {
         strip.setPixelColor(i, 0, 0, 128);  
     }
     strip.show();
 }
 
-int redRange, yellowRange, greenRange, maxSensorRange;
-
 void doRangeCalibration()
 {
     VL53L0X_RangingMeasurementData_t measure;
     if (calibratingNotice == false)  // only need to say this once per button press
     {
-        Serial.println("Calibrating stop point"); 
+        Serial.println("Calibrating ToF Sensor"); 
         calibratingNotice = true;
     }
 
@@ -174,14 +158,15 @@ void doRangeCalibration()
         {
             // Calibration explanation
             // When the user holds the button, a series of measurements set the "stop" zone, and record that in mm.
-            // We want to support different display mechanimsm (neopixel, servo, 7-segment, etc), so latest measurement will
+            // We want to support different display mechanisms (neopixel, servo, 7-segment, etc), so latest measurement will
             // always be available in mm
 
             // For the neopixel strip my implementation uses the last 1/3 of the strip to show (in red) how far you are past the stop point.
             // Might add a TOO CLOSE indicator like blinking light if range is dangerously close to the sensor.
+            //TODO  Add an offset.  The vehicle SHOULD never be right on top of the sensor chip!!!
 
             redRange = range;
-            // So, let's take the calibration distance, and extrapolate the "green" and "yellow" distances.
+            // Now that we have the red distance, let's extrapolate the "yellow" and "green" distances.
 
             yellowRange = range * 2; // Middle 1/3 of neopixel strip
             greenRange = range * 3;  // First 1/3 of neopixel strip
@@ -192,6 +177,8 @@ void doRangeCalibration()
 
             sprintf(printBuffer, "Calibrated Red=%d Yellow=%d Green=%d  mmPerLed=%d  max=%d", redRange, yellowRange, greenRange, mmPerLed, maxSensorRange);
             Serial.println(printBuffer);
+
+            // TODO Wait for calibration button to be released, and write ranges and mmPerLed into pseudo-EEPROM
         }
         calibrationState = CALIBRATED;
     }
@@ -213,8 +200,11 @@ void showRangeOnLedStrip(int value)
         strip.clear();
         strip.show();
 
-        if (value == 0)
+        if (value == 0){
             Serial.print("There should be NO leds active");
+            strip.clear();
+            strip.show();
+        }
         else
         {
             for (int i = 0; i < value; i++)
