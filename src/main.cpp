@@ -1,11 +1,7 @@
-/*
- * Sensor connected to the LEFT grove plug on the WIO.
- *  NeoPixel to WIO: Pin 4(5V), Pin 6(GND), Pin 16(D2)
- */
-//#include <Adafruit_NeoPixel.h>
+
 #include <Adafruit_VL53L0X.h>
 #include <Adafruit_NeoPixel.h>
-//#include <TFT_eSPI.h>
+
 #include <Wire.h>
 #define Console Serial           // command processor input/output stream
 
@@ -16,10 +12,7 @@ const uint16_t MaxRange = 1200;  // Units mm
 
 int calSwitchStatus = 0; // Init button state to not pressed
 
-int mmPerLed = -1;
 // Various states of calibration
-
-
 const int NOTCALIBRATED = 0;
 const int CALIBRATING = 1;
 const int CALIBRATED = 2;
@@ -28,7 +21,11 @@ const int CALFAILURE = 3;
 int calibrationState = NOTCALIBRATED;
 
 int range = -1;
+int mmPerLed = -1;
+int sensorOffset = 200; // The target must be at least this distance away from the sensor.  We do not want to park with the vehicle on the sensor
+int rangeWidth = 0;  //The width of the closest (red) range minus the sensorOffset
 
+// Avoid repetetive messages with Notice booleans
 boolean notCalibratedYetNotice = false;
 boolean calibratingNotice = false;
 boolean calibrationNeedsTargetNotice = false;
@@ -36,8 +33,8 @@ boolean calibrationNeedsTargetNotice = false;
 
 int redRange, yellowRange, greenRange, maxSensorRange;
 char printBuffer[80];
-Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(PixelCount, PixelPin, NEO_GRB);
 
 
@@ -72,19 +69,11 @@ void setup()
     }
 
     // When the Calibrate button is pushed, we will set the range to the yellow/red transition point
-    // This inforation will be stored in pseudo-eeprom on the nodemcu]
+    // This inforation will be stored in pseudo-eeprom on the nodemcu
 
-    pinMode(CalibrationPin, INPUT_PULLUP);     // set pin to input
-    digitalWrite(CalibrationPin, HIGH); // turn on pullup resistors
+    pinMode(CalibrationPin, INPUT_PULLUP);      // set pin to input
+    digitalWrite(CalibrationPin, HIGH);         // turn on pullup resistors
 
-
-/*
-    Serial.print ("Initial greenLedRange: ");
-    Serial.println (GreenLedRange);
-
-    Serial.print ("Initial yellowLedRange: ");
-    Serial.println (YellowLedRange);
-*/
     strip.begin(); //
     strip.clear(); //
     strip.show();  //
@@ -134,26 +123,41 @@ void ledShowCalibrationFailure () {  // Every other LED blue for calibration fai
     strip.show();
 }
 
+boolean targetTooCloseNotice = false;
+
 void doRangeCalibration()
 {
     VL53L0X_RangingMeasurementData_t measure;
+    Serial.print ("Beginning calibration\n");
+
+    targetTooCloseNotice = false;
+
     if (calibratingNotice == false)  // only need to say this once per button press
     {
         Serial.println("Calibrating ToF Sensor"); 
         calibratingNotice = true;
+  
     }
 
     lox.rangingTest(&measure, false); // Request a measurement
-    if (measure.RangeStatus != 4)
-    { // We have a valid return value
+    if (measure.RangeStatus != 4) { // We have a valid return value
         range = measure.RangeMilliMeter;
+        Serial.print ("Range=");
+        Serial.println (range);
+    
         if (range == 0)
         {
             if (calibrationNeedsTargetNotice == false) {
                 Serial.println("Nothing in range.  I need something to calibrate against");
                 calibrationNeedsTargetNotice = true; // Only need to say this once per button press
             }
+        }  
+        
+        else if (range < sensorOffset) {
+            Serial.println("The target is too close to the sensor.  Back it up");
+            targetTooCloseNotice = true; // Don't keep saying this
         }
+        
         else
         {
             // Calibration explanation
@@ -163,14 +167,19 @@ void doRangeCalibration()
 
             // For the neopixel strip my implementation uses the last 1/3 of the strip to show (in red) how far you are past the stop point.
             // Might add a TOO CLOSE indicator like blinking light if range is dangerously close to the sensor.
-            //TODO  Add an offset.  The vehicle SHOULD never be right on top of the sensor chip!!!
+            // TODO  Add an offset.  The vehicle SHOULD never be right on top of the sensor chip!!!
 
-            redRange = range;
+            redRange = range - sensorOffset;
+            // redRange = range - sensorOffset;
+            sprintf(printBuffer, "SensorOffset: %d  Range: %d  redRange: %d", sensorOffset, range, redRange);
+            Serial.println(printBuffer);
+            //delay(10000);
+
             // Now that we have the red distance, let's extrapolate the "yellow" and "green" distances.
 
-            yellowRange = range * 2; // Middle 1/3 of neopixel strip
-            greenRange = range * 3;  // First 1/3 of neopixel strip
-            maxSensorRange = greenRange;  // Measurements beyond the green range are clipped to first green LED
+            yellowRange =  (redRange * 2) + sensorOffset;  // Middle 1/3 of neopixel strip
+            greenRange = (redRange * 3) + sensorOffset;   // First 1/3 of neopixel strip
+            maxSensorRange = greenRange; // Measurements beyond the green range are clipped to first green LED
 
             // Use pixelCount to determine how many mm are represented by each lit pixel
             mmPerLed = (int)(redRange / (PixelCount / 3));
@@ -179,8 +188,8 @@ void doRangeCalibration()
             Serial.println(printBuffer);
 
             // TODO Wait for calibration button to be released, and write ranges and mmPerLed into pseudo-EEPROM
+            calibrationState = CALIBRATED;
         }
-        calibrationState = CALIBRATED;
     }
 }
 
@@ -200,30 +209,21 @@ void showRangeOnLedStrip(int value)
         strip.clear();
         strip.show();
 
-        if (value == 0){
+        if (value ==0){
             Serial.print("There should be NO leds active");
             strip.clear();
             strip.show();
         }
         else
         {
-            for (int i = 0; i < value; i++)
+            for (int i = 0; i <= value; i++)
             {
-                if (i > 14)
-                {
+                if (i >= (int)(PixelCount * 2 / 3)) // red for upper third
                     strip.setPixelColor(i, 32, 0, 0); // red
-
-                }
-                else if (i > 7)
-                {
-                    strip.setPixelColor(i, 32, 32, 0); // yellow
-
-                }
+                else if (i >= (int)(PixelCount / 3))
+                    strip.setPixelColor(i, 32, 32, 0); // yellow for middle third
                 else
-                {
                     strip.setPixelColor(i, 0, 32, 0); // green
-
-                }
                 strip.show();
             }
         }
@@ -239,14 +239,16 @@ void ledShowCalibrated() {
         range = measure.RangeMilliMeter;
         if (range > maxSensorRange) 
             range = maxSensorRange;
-        int ledDistance = (int)(range / mmPerLed);
+        int ledDistance = (int)((range - sensorOffset) / mmPerLed);
         // Subtract ledDistance from PixelCount, because we're lighting more LEDs as we get closer (smaller ToF value, more lights)
         sprintf (printBuffer, "Range: %d   mmPerLed:%d   Active LEDs: %d", range, mmPerLed, PixelCount - ledDistance);
         Serial.println (printBuffer);
         showRangeOnLedStrip(PixelCount - ledDistance);
     }
-    else
-        Serial.println ("Ranging error");
+    else {
+        //Serial.println ("Ranging error");
+        showRangeOnLedStrip(0);
+    }
     //delay (600);
 
 }
