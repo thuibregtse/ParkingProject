@@ -1,6 +1,7 @@
 
 #include <Adafruit_VL53L0X.h>
 #include <Adafruit_NeoPixel.h>
+#include <EEPROM.h>
 
 #include <Wire.h>
 #define Console Serial           // command processor input/output stream
@@ -59,6 +60,14 @@ int pauseTime = 10;
     strip.clear();
 }
 
+
+
+
+
+
+// start reading from the first byte (address 0) of the EEPROM
+
+
 void setup()
 {
 
@@ -77,6 +86,7 @@ void setup()
     strip.begin(); //
     strip.clear(); //
     strip.show();  //
+    EEPROM.begin(512);
 
     testStrip();
     delay(500);
@@ -188,7 +198,15 @@ void doRangeCalibration()
             Serial.println(printBuffer);
 
             // TODO Wait for calibration button to be released, and write ranges and mmPerLed into pseudo-EEPROM
-            calibrationState = CALIBRATED;
+            // Save tghe calibration value into EEPROM when the button is released.  Otherwise keep re-reading
+            calSwitchStatus = digitalRead(CalibrationPin);
+            if (calSwitchStatus == 1)
+            {
+                sprintf(printBuffer, "Storing calibration values of %d %d %d %d %d", sensorOffset, redRange, yellowRange, greenRange, mmPerLed);
+                Serial.println(printBuffer);
+                calibrationState = CALIBRATED;
+                delay(2000);
+            }
         }
     }
 }
@@ -209,7 +227,8 @@ void showRangeOnLedStrip(int value)
         strip.clear();
         strip.show();
 
-        if (value ==0){
+        if (value == 0)
+        {
             Serial.print("There should be NO leds active");
             strip.clear();
             strip.show();
@@ -218,7 +237,7 @@ void showRangeOnLedStrip(int value)
         {
             for (int i = 0; i <= value; i++)
             {
-                if (i >= (int)(PixelCount * 2 / 3)) // red for upper third
+                if (i >= (int)(PixelCount * 2 / 3))   // red for upper third
                     strip.setPixelColor(i, 32, 0, 0); // red
                 else if (i >= (int)(PixelCount / 3))
                     strip.setPixelColor(i, 32, 32, 0); // yellow for middle third
@@ -230,64 +249,99 @@ void showRangeOnLedStrip(int value)
     }
 }
 
-void ledShowCalibrated() {
+void ledShowCalibrated()
+{
     VL53L0X_RangingMeasurementData_t measure;
 
     delay(200);
     lox.rangingTest(&measure, false);
-    if (measure.RangeStatus != 4) { // We have a valid return value  
+    if (measure.RangeStatus != 4)
+    { // We have a valid return value
         range = measure.RangeMilliMeter;
-        if (range > maxSensorRange) 
+        if (range > maxSensorRange)
             range = maxSensorRange;
         int ledDistance = (int)((range - sensorOffset) / mmPerLed);
         // Subtract ledDistance from PixelCount, because we're lighting more LEDs as we get closer (smaller ToF value, more lights)
-        sprintf (printBuffer, "Range: %d   mmPerLed:%d   Active LEDs: %d", range, mmPerLed, PixelCount - ledDistance);
-        Serial.println (printBuffer);
+        sprintf(printBuffer, "Range: %d   mmPerLed:%d   Active LEDs: %d", range, mmPerLed, PixelCount - ledDistance);
+        Serial.println(printBuffer);
         showRangeOnLedStrip(PixelCount - ledDistance);
     }
-    else {
-        //Serial.println ("Ranging error");
+    else
+    {
+        // Serial.println ("Ranging error");
         showRangeOnLedStrip(0);
     }
-    //delay (600);
-
+    // delay (600);
 }
 
-
-
-
+int address = 0;
 
 void loop()
 {
-    //uint16_t ledPrevNum = 0, ledNum = 0, range = 0;
-  
-// Has the calibration button been pressed
-    calSwitchStatus = digitalRead (CalibrationPin);
-    if (calSwitchStatus == 0) {
+    // uint16_t ledPrevNum = 0, ledNum = 0, range = 0;
+
+    // Has the calibration button been pressed.  This is either for initial calibration or re-calibraion
+    calSwitchStatus = digitalRead(CalibrationPin);
+    if (calSwitchStatus == 0)
+    {
         calibrationState = CALIBRATING;
-        calibratingNotice = false;  // Reset to allow messages
+        calibratingNotice = false; // Reset to allow messages
     }
 
-    if (calibrationState == NOTCALIBRATED) {
-        if (notCalibratedYetNotice == false) {
-            Serial.print ("Not calibrated yet");
+
+    if (calibrationState == NOTCALIBRATED)
+    {
+        if (notCalibratedYetNotice == false)
+        {
+            Serial.print("Not calibrated yet");
             ledShowNotCalibrated();
             notCalibratedYetNotice = true;
         }
     }
 
-    else if (calibrationState == CALIBRATING) {
-        Serial.println ("Calibrating");
-        doRangeCalibration();
-        delay (1000);
+    else if (calibrationState == CALIBRATING)
+    {
+        Serial.println("Calibrating");
+        doRangeCalibration();    
     }
+    /*
+    if (calSwitchStatus == 0)
+    {
+        calibrationState = CALIBRATING;
+        calibratingNotice = false; // Reset to allow messages
+    }
+    */
+
     else if (calibrationState == CALIBRATED)
-        ledShowCalibrated();  // Normal ranging routine after calibration
+    {
+
+        byte value;
+
+    /*
+        // read a byte from the current address of the EEPROM
+        value = EEPROM.read(address);
+
+        Serial.print(address);
+        Serial.print("\t");
+        Serial.print(value, DEC);
+        Serial.println();
+
+        // advance to the next address of the EEPROM
+        address = address + 1;
+
+        // there are only 512 bytes of EEPROM, from 0 to 511, so if we're
+        // on address 512, wrap around to address 0
+        if (address == 512)
+        {
+            address = 0;
+        }
+
+        delay(500);
+
+
+ */
+        ledShowCalibrated(); // Normal ranging routine after calibration
+    }
     else
         ledShowCalibrationFailure();
-
-
-
-
-
 }
