@@ -5,10 +5,10 @@
 
 #include <Wire.h>
 #define Console Serial // command processor input/output stream
-
+#define EEPROM_SIZE 18
 /// EEprom code and docs are from https://github.com/esp8266/Arduino/tree/master/libraries/EEPROM/examples
 
-const uint16_t PixelCount = 21;
+const uint16_t PixelCount = 39;
 const uint16_t PixelPin = D4;
 const uint16_t CalibrationPin = D5; // Used to set yellow/red transition distance
 const uint16_t MaxRange = 1200;     // Units mm
@@ -21,14 +21,8 @@ const int CALIBRATING = 1;
 const int CALIBRATED = 2;
 const int CALFAILURE = 3;
 
-// 2-byte spacing for integers stored in EEPROM
-//  USE CODED VARIABLE, NOT WHAT'S IN EEPROM    int EEPROMADDRSENSOROFFSET = 0;
-int EEPROMADDRREDRANGE = 2;
-int EEPROMADDRYELRANGE = 4;
-int EEPROMADDRGRNRANGE = 6;
-int EEPROMADDRMMPERLED = 8;
 
-int calibrationState = NOTCALIBRATED;
+int calibrationState = CALIBRATED;
 
 int range = -1;
 int mmPerLed = -1;
@@ -53,29 +47,57 @@ int RedLedRange = YellowLedRange + GreenLedRange; // Last third is red
 
 void testStrip()
 {
-    int pauseTime = 5;
+    int pauseTime = 300;
     for (int i = 0; i < PixelCount; i++)
     {
-        strip.setPixelColor(i, 32, 32, 32);
-        strip.show();
-        delay(pauseTime);
+        strip.setPixelColor(i, 0, 32, 0);
     }
-    delay(200);
+    strip.show();
+    delay(pauseTime);
     strip.clear();
 }
 
-// EEprom routines for values potentially > 256
-void writeIntIntoEEPROM(int address, int number)
+
+void saveCalibrationValues()
 {
-    EEPROM.write(address, number >> 8);
-    EEPROM.write(address + 1, number & 0xFF);
+    int address = 0;
+    EEPROM.put(address, sensorOffset);
+    address += sizeof(sensorOffset); 
+    EEPROM.put(address, redRange);
+    address += sizeof(redRange); 
+    EEPROM.put(address, yellowRange);
+    address += sizeof(yellowRange); 
+    EEPROM.put(address, greenRange);
+    address += sizeof(greenRange); 
+    Serial.print ("DEBUG: I AM SAVING A mmPerLed OF ");
+    Serial.println (mmPerLed);
+
+    EEPROM.put(address, mmPerLed);
+    address += sizeof(mmPerLed); 
+    EEPROM.commit();
 }
 
-int readIntFromEEPROM(int address)
+void readCalibrationValues()
 {
-    byte byte1 = EEPROM.read(address);
-    byte byte2 = EEPROM.read(address + 1);
-    return (byte1 << 8) + byte2;
+    int foo = -100;
+    int address = 0;
+    EEPROM.put(address, sensorOffset);
+    address += sizeof(sensorOffset); 
+    EEPROM.get(address, redRange);
+    address += sizeof(redRange); 
+    EEPROM.get(address, yellowRange);
+    address += sizeof(yellowRange); 
+    EEPROM.get(address, greenRange);
+    address += sizeof(greenRange); 
+
+    EEPROM.get(address, mmPerLed);
+    Serial.print ("DEBUG: I READ BACK A mmPerLed OF ");
+    Serial.println (mmPerLed);
+    address += sizeof(mmPerLed); 
+    sprintf(printBuffer, "readCalibrationValues returned offset: %d r: %d y: %d g: %d  mmPerLed: %d", sensorOffset, redRange, yellowRange, greenRange, mmPerLed);
+    Serial.println(printBuffer);
+
+    //EEPROM.end();
 }
 
 // start reading from the first byte (address 0) of the EEPROM
@@ -99,26 +121,17 @@ void setup()
     strip.begin(); //
     strip.clear(); //
     strip.show();  //
-    EEPROM.begin(512);
+    EEPROM.begin(30);
 
     testStrip();
     delay(500);
-
+    calibrationState = CALIBRATED;
     Serial.println("ToF Parking Assistant\n");
 
-    // int loxStartLimit = 100;
-    // int loxStartTries = 0;
-    // bool loxIsStarted = false;
-
-    //sensorOffset = readIntFromEEPROM(EEPROMADDRSENSOROFFSET);
-    redRange = readIntFromEEPROM(EEPROMADDRREDRANGE);
-    yellowRange = readIntFromEEPROM(EEPROMADDRYELRANGE);
-    greenRange = readIntFromEEPROM(EEPROMADDRGRNRANGE);
-    mmPerLed = readIntFromEEPROM(EEPROMADDRMMPERLED);
-
-    sprintf (printBuffer, "EEPROM offset: %d rRange: %d yRange: %d gRange: %d  mmLed: %d", sensorOffset, redRange, yellowRange, greenRange, mmPerLed);
+    readCalibrationValues();
+    sprintf (printBuffer, "IN SETUP: EEPROM offset: %d rRange: %d yRange: %d gRange: %d  mmLed: %d", sensorOffset, redRange, yellowRange, greenRange, mmPerLed);
     Serial.println (printBuffer);
-    delay (5000);
+    delay (2000);
 
 /*
     if ( (sensorOffset == 255) && (redRange == 255) && (yellowRange == 255) && (greenRange == 255))  // Fresh, unwritten EEPROM
@@ -171,7 +184,7 @@ boolean targetTooCloseNotice = false;
 void doRangeCalibration()
 {
     VL53L0X_RangingMeasurementData_t measure;
-    Serial.print("Beginning calibration\n");.
+    Serial.print("Beginning calibration\n");
 
     targetTooCloseNotice = false;
 
@@ -215,7 +228,7 @@ void doRangeCalibration()
             // TODO  Add an offset.  The vehicle SHOULD never be right on top of the sensor chip!!!
 
             int sensorDelta = range - sensorOffset;  // Red zone starts at sensorOffset, ends at "range".  This # of mm will be repeated for yellow and green zones
-
+            Serial.println("BEGINNING CALIBRATION");
             Serial.print ("Red led range: ");
             Serial.print (sensorOffset);
             Serial.print (" to ");
@@ -247,7 +260,7 @@ void doRangeCalibration()
             // Use pixelCount to determine how many mm are represented by each lit pixel
             mmPerLed = (int)((sensorDelta * 3) / PixelCount);
 
-            sprintf(printBuffer, "Calibrated Red=%d Yellow=%d Green=%d  mmPerLed=%d  max=%d", redRange, yellowRange, greenRange, mmPerLed, maxSensorRange);
+            sprintf(printBuffer, "I JUST CALIBRATED  Red=%d Yellow=%d Green=%d  mmPerLed=%d  max=%d", redRange, yellowRange, greenRange, mmPerLed, maxSensorRange);
             Serial.println(printBuffer);
 
             // Show one yellow and one red LED at the target zone.  This is the stop point
@@ -261,26 +274,13 @@ void doRangeCalibration()
             calSwitchStatus = digitalRead(CalibrationPin);
             if (calSwitchStatus == 1)
             {
-                sprintf(printBuffer, "Storing calibration values of %d %d %d %d %d", sensorOffset, redRange, yellowRange, greenRange, mmPerLed);
+                sprintf(printBuffer, "STORING calibration values of %d %d %d %d %d", sensorOffset, redRange, yellowRange, greenRange, mmPerLed);
                 Serial.println(printBuffer);
-
-
-                writeIntIntoEEPROM(EEPROMADDRREDRANGE, redRange);
-                writeIntIntoEEPROM(EEPROMADDRYELRANGE, yellowRange);
-                writeIntIntoEEPROM(EEPROMADDRGRNRANGE, greenRange);
-                writeIntIntoEEPROM(EEPROMADDRMMPERLED, mmPerLed);
+                saveCalibrationValues();
                 calibrationState = CALIBRATED;
-                delay(5000);
-
-                Serial.print("NOW READING BACK VALUES FROM EEPROM");
-                redRange = readIntFromEEPROM(EEPROMADDRREDRANGE);
-                yellowRange = readIntFromEEPROM(EEPROMADDRYELRANGE);
-                greenRange = readIntFromEEPROM(EEPROMADDRGRNRANGE);
-                mmPerLed = readIntFromEEPROM(EEPROMADDRMMPERLED);
-
-                sprintf(printBuffer, "READBACK EEPROM offset: %d rRange: %d yRange: %d gRange: %d  mmLed: %d", sensorOffset, redRange, yellowRange, greenRange, mmPerLed);
-                Serial.println(printBuffer);
-                delay(5000);
+                delay(500);
+                readCalibrationValues();
+                delay(1000);
             }
         }
     }
@@ -324,6 +324,11 @@ void showRangeOnLedStrip(int value)
     }
 }
 
+
+int  readDistance()  {
+
+    
+}
 void ledShowCalibrated()
 {
     VL53L0X_RangingMeasurementData_t measure;
@@ -339,7 +344,8 @@ void ledShowCalibrated()
         // Subtract ledDistance from PixelCount, because we're lighting more LEDs as we get closer (smaller ToF value, more lights)
         sprintf(printBuffer, "Range: %d   mmPerLed:%d   Active LEDs: %d", range, mmPerLed, PixelCount - ledDistance);
         Serial.println(printBuffer);
-        showRangeOnLedStrip(PixelCount - ledDistance);
+        if (range != 0)
+            showRangeOnLedStrip(PixelCount - ledDistance);
     }
     else
     {
@@ -389,31 +395,53 @@ void loop()
     else if (calibrationState == CALIBRATED)
     {
 
-        /*
-            // read a byte from the current address of the EEPROM
-            value = EEPROM.read(address);
-
-            Serial.print(address);
-            Serial.print("\t");
-            Serial.print(value, DEC);
-            Serial.println();
-
-            // advance to the next address of the EEPROM
-            address = address + 1;
-
-            // there are only 512 bytes of EEPROM, from 0 to 511, so if we're
-            // on address 512, wrap around to address 0
-            if (address == 512)
-            {
-                address = 0;
-            }
-
-            delay(500);
-
-
-     */
         ledShowCalibrated(); // Normal ranging routine after calibration
     }
     else
         ledShowCalibrationFailure();
 }
+
+
+/*
+//Libraries
+#include <EEPROM.h>//https://github.com/esp8266/Arduino/blob/master/libraries/EEPROM/EEPROM.h
+
+//Constants
+#define EEPROM_SIZE 12
+
+void setup() {
+  //Init Serial USB
+  Serial.begin(115200);
+  Serial.println(F("Initialize System"));
+  //Init EEPROM
+  EEPROM.begin(EEPROM_SIZE);
+
+  //Write data into eeprom
+  int address = 0;
+  int boardId = 18;
+  EEPROM.put(address, boardId);
+  address += sizeof(boardId); //update address value
+
+  float param = 26.5;
+  EEPROM.put(address, param);
+  EEPROM.commit();
+
+  //Read data from eeprom
+  address = 0;
+  int readId;
+  EEPROM.get(address, readId);
+  Serial.print("Read Id = ");
+  Serial.println(readId);
+  address += sizeof(readId); //update address value
+
+  float readParam;
+  EEPROM.get(address, readParam); //readParam=EEPROM.readFloat(address);
+  Serial.print("Read param = ");
+  Serial.println(readParam);
+
+  EEPROM.end();
+}
+
+void loop() {}
+
+*/
