@@ -8,9 +8,11 @@
 #define EEPROM_SIZE 18
 /// EEprom code and docs are from https://github.com/esp8266/Arduino/tree/master/libraries/EEPROM/examples
 
-const uint16_t PixelCount = 18;
-const uint16_t PixelPin = D4;
-const uint16_t CalibrationPin = D5; // Used to set yellow/red transition distance
+const uint16_t PixelCount = 30;
+///const uint16_t PixelPin = D4;
+const uint16_t PixelPin = D3;
+//const uint16_t CalibrationPin = D5; // Used to set yellow/red transition distance
+const uint16_t CalibrationPin = D0; // Used to set yellow/red transition distance
 const uint16_t MaxRange = 1200;     // Units mm
 
 int calSwitchStatus = 0; // Init button state to not pressed
@@ -26,7 +28,7 @@ int calibrationState = CALIBRATED;
 
 int range = -1;
 int mmPerLed = -1;
-int sensorOffset = 200; // The target must be at least this distance away from the sensor.  We do not want to park with the vehicle on the sensor
+int sensorOffset = 300; // The target must be at least this distance away from the sensor.  We do not want to park with the vehicle on the sensor
 int rangeWidth = 0;              // The width of the closest (red) range minus the sensorOffset
 
 // Avoid repetetive messages with Notice booleans
