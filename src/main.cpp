@@ -9,11 +9,17 @@
 /// EEprom code and docs are from https://github.com/esp8266/Arduino/tree/master/libraries/EEPROM/examples
 
 const uint16_t PixelCount = 30;
-///const uint16_t PixelPin = D4;
-const uint16_t PixelPin = D3;
-//const uint16_t CalibrationPin = D5; // Used to set yellow/red transition distance
+const uint16_t PixelPin = D3; 
 const uint16_t CalibrationPin = D0; // Used to set yellow/red transition distance
 const uint16_t MaxRange = 1200;     // Units mm
+
+
+int smoothIndex = 0;
+int smoothTotal = 0;              // the running total
+int smoothAverage = 0; 
+const int numReadings = 10;        // Number of readings to average
+
+int readings[numReadings];  //
 
 int calSwitchStatus = 0; // Init button state to not pressed
 
@@ -24,7 +30,7 @@ const int CALIBRATED = 2;
 const int CALFAILURE = 3;
 
 
-int calibrationState = CALIBRATED;
+int calibrationState = CALIBRATED;  // need to implement checksum that goes into eeprom to decide if this unit has been calibrated.
 
 int range = -1;
 int mmPerLed = -1;
@@ -109,7 +115,7 @@ int readToFDistance()
     if (measure.RangeStatus != 4)
     { // We have a valid return value
         range = measure.RangeMilliMeter;
-        Serial.println(range);
+///Serial.println(range);
         /*
         if (range > maxSensorRange)
             range = maxSensorRange;
@@ -142,6 +148,12 @@ void setup()
     strip.show();  
     EEPROM.begin(EEPROM_SIZE);
 
+
+  // initialize all the readings to 0:
+  for (int thisReading = 0; thisReading < numReadings; thisReading++) {
+    readings[thisReading] = 0;
+  }
+
     testStrip();
     delay(200);
 
@@ -152,12 +164,12 @@ void setup()
     calibrationState = CALIBRATED;
     sprintf (printBuffer, "IN SETUP: EEPROM offset: %d rRange: %d yRange: %d gRange: %d  mmLed: %d", sensorOffset, redRange, yellowRange, greenRange, mmPerLed);
     Serial.println (printBuffer);
-    delay (2000);
+    delay (400);
 
 
     if (!lox.begin())
     {
-        delay(50);
+        delay(20);
         Serial.println(F("Failed to boot VL53L0X ToF Sensor"));
         strip.setPixelColor(2, 64, 0, 0); // 2nd LED: red for lox is not started
         strip.show();
@@ -244,12 +256,10 @@ void doRangeCalibration()
             ///Serial.print("Red LEDs will start at: ");
             Serial.print(range);
             Serial.print (" ");
-            //Serial.print ("And the range delta is ");
-            //Serial.println (sensorDelta);
+ 
 
             delay (100);
-            ///Serial.print(sensorOffset);
-            ///Serial.print(" to ");
+
 
             redRange = range;
             // Now that we have the red distance, let's extrapolate the "yellow" and "green" distances.
@@ -288,22 +298,59 @@ void doRangeCalibration()
 
 int oldValue = -1;
 
-// The distance LED strip should really be an object with offset, r/y/g ranges, and mmPerLed. 
+// The neopixel strip should really be an object with offset, r/y/g ranges, and mmPerLed. 
 // Right now these are globals
+
+
+// TODO:  ADD LOGIC TO REMOVE OUTLIER DATA POINTS
+int smooth(int latestValue)
+{
+
+    smoothTotal = smoothTotal - readings[smoothIndex];
+    // read from the sensor:
+    //if (latestValue < 0)
+    //    latestValue = 0;
+    readings[smoothIndex] = latestValue;
+    smoothTotal = smoothTotal + readings[smoothIndex];
+    // advance to the next position in the array:
+    smoothIndex = smoothIndex + 1;
+    // if we're at the end of the array...
+    if (smoothIndex >= numReadings)
+    {
+        // ...wrap around to the beginning:
+        smoothIndex = 0;
+    }
+    // calculate the average:
+    smoothAverage = smoothTotal / numReadings;
+    return (smoothAverage);
+}
 
 void showRangeOnLedStrip(int rangeValue) // Value is now range in mm, not # of LEDs
 {
-
-
     Serial.print(rangeValue);
-    if (rangeValue != oldValue)
+
+    if (rangeValue == -1)
+    { // Either no target or out of range.  Display nothing
+       // Serial.print("STRIP IS BEING ASKED TO SHOW VALUE OF -1");
+        strip.clear();
+        strip.show();
+    }
+
+    else if (rangeValue < sensorOffset)
+    { // Target is dangerously inside the sensorOffset Range
+        for (int i = 0; i <= PixelCount; i++)
+            strip.setPixelColor(i, 32, 0, 0); // red
+        strip.show();
+    }
+
+    else if (rangeValue != oldValue) //  Draw valid value in G/Y/R range on strip
     {
         Serial.println("(New) ");
         oldValue = rangeValue;
 
         if (mmPerLed == 0)
         {
-            Serial.println("Warning: mmPerLed=0.  Substituting 5 to avoid / 0 error");
+            Serial.println("Warning: mmPerLed=0.  Substituting 5 to avoid / 0 error  (large PixelCount?)");
             delay(2000);
             mmPerLed = 5; ///  Avoid / 0 error
                           //  We need to show the inverse of the number of LEDs
@@ -311,11 +358,16 @@ void showRangeOnLedStrip(int rangeValue) // Value is now range in mm, not # of L
         }
         int ledValue = (PixelCount - (int)((range - sensorOffset) / mmPerLed));
 
-        Serial.print("LED: ");
-        Serial.print(ledValue);
+        if (ledValue < 0)
+            ledValue = 0;
 
-        //strip.clear();
-        strip.show();
+        Serial.print("Range: ");
+        Serial.print(rangeValue);
+        Serial.print(" LED: ");
+        Serial.println(ledValue);
+
+        // strip.clear();
+        // strip.show();
 
         if (ledValue == 0)
         {
@@ -341,50 +393,20 @@ void showRangeOnLedStrip(int rangeValue) // Value is now range in mm, not # of L
     }
 }
 
-    /*
-
-    void ledShowCalibrated()
-    {
-        VL53L0X_RangingMeasurementData_t measure;
-
-        delay(200);
-        lox.rangingTest(&measure, false);
-        if (measure.RangeStatus != 4)
-        { // We have a valid return value
-            range = measure.RangeMilliMeter;
-            if (range > maxSensorRange)
-                range = maxSensorRange;
-            int ledDistance = (int)((range - sensorOffset) / mmPerLed);
-            // Subtract ledDistance from PixelCount, because we're lighting more LEDs as we get closer (smaller ToF value, more lights)
-            sprintf(printBuffer, "Range: %d   mmPerLed:%d   Active LEDs: %d", range, mmPerLed, PixelCount - ledDistance);
-            Serial.println(printBuffer);
-            if (range != 0)
-                showRangeOnLedStrip(PixelCount - ledDistance);
-        }
-        else
-        {
-            // Serial.println ("Ranging error");
-            showRangeOnLedStrip(0);
-        }
-        // delay (600);
-    }
-    */
-
     int address = 0;
 
     void loop()
     {
-        Serial.print("L ");
-        // uint16_t ledPrevNum = 0, ledNum = 0, range = 0;
+// TODO  Add routine that checks if calibration values have been saved in EEPROM.
+//       This will probably be a saved checksum of other saved values
 
         // Has the calibration button been pressed.  This is either for initial calibration or re-calibraion
         calSwitchStatus = digitalRead(CalibrationPin);
         if (calSwitchStatus == 0)
         {
             calibrationState = CALIBRATING;
-            calibratingNotice = false; // Reset to allow messages
+            calibratingNotice = false; //  Soon, set this to True to stop repeating messages
         }
-
         if (calibrationState == NOTCALIBRATED)
         {
             if (notCalibratedYetNotice == false)
@@ -394,72 +416,28 @@ void showRangeOnLedStrip(int rangeValue) // Value is now range in mm, not # of L
                 notCalibratedYetNotice = true;
             }
         }
-
         else if (calibrationState == CALIBRATING)
         {
             Serial.println("Calibrating");
             doRangeCalibration();
         }
-        /*
-        if (calSwitchStatus == 0)
-        {
-            calibrationState = CALIBRATING;
-            calibratingNotice = false; // Reset to allow messages
-        }
-        */
-
         else if (calibrationState == CALIBRATED)
         {
+            // Should have some X millisecond minimum delay here.
+            //  Ranging pings could increase as target gets closer
 
             int distanceToTarget = readToFDistance();
-            Serial.print(" ");
-            Serial.print(distanceToTarget);
-            showRangeOnLedStrip(distanceToTarget);
+            // Experimental smoothing function
+            //Serial.print ("distanceToTarget: ");
+            //Serial.print (distanceToTarget);
+
+            int smoothedDistance= smooth(distanceToTarget);
+            Serial.print(" S:");
+            Serial.println(smoothedDistance);
+            showRangeOnLedStrip(smoothedDistance);
         }
         else
             ledShowCalibrationFailure();
     }
 
-    /*
-    //Libraries
-    #include <EEPROM.h>//https://github.com/esp8266/Arduino/blob/master/libraries/EEPROM/EEPROM.h
-
-    //Constants
-    #define EEPROM_SIZE 12
-
-    void setup() {
-      //Init Serial USB
-      Serial.begin(115200);
-      Serial.println(F("Initialize System"));
-      //Init EEPROM
-      EEPROM.begin(EEPROM_SIZE);
-
-      //Write data into eeprom
-      int address = 0;
-      int boardId = 18;
-      EEPROM.put(address, boardId);
-      address += sizeof(boardId); //update address value
-
-      float param = 26.5;
-      EEPROM.put(address, param);
-      EEPROM.commit();
-
-      //Read data from eeprom
-      address = 0;
-      int readId;
-      EEPROM.get(address, readId);
-      Serial.print("Read Id = ");
-      Serial.println(readId);
-      address += sizeof(readId); //update address value
-
-      float readParam;
-      EEPROM.get(address, readParam); //readParam=EEPROM.readFloat(address);
-      Serial.print("Read param = ");
-      Serial.println(readParam);
-
-      EEPROM.end();
-    }
-
-    void loop() {}
-
-    */
+    //#include <EEPROM.h>//https://github.com/esp8266/Arduino/blob/master/libraries/EEPROM/EEPROM.h
