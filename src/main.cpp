@@ -29,12 +29,13 @@ const int CALIBRATING = 1;
 const int CALIBRATED = 2;
 const int CALFAILURE = 3;
 
+int MAXSENSORRANGE = 1000;  //  Limit of reliable ToF measurement
 
 int calibrationState = CALIBRATED;  // need to implement checksum that goes into eeprom to decide if this unit has been calibrated.
 
 int range = -1;
 int mmPerLed = -1;
-int sensorOffset = 300; // The target must be at least this distance away from the sensor.  We do not want to park with the vehicle on the sensor
+int sensorOffset = 100; // The target must be at least this distance away from the sensor.  We do not want to park with the vehicle on the sensor
 int rangeWidth = 0;              // The width of the closest (red) range minus the sensorOffset
 
 // Avoid repetetive messages with Notice booleans
@@ -42,7 +43,7 @@ boolean notCalibratedYetNotice = false;
 boolean calibratingNotice = false;
 boolean calibrationNeedsTargetNotice = false;
 
-int redRange, yellowRange, greenRange, maxSensorRange;
+int redRange, yellowRange, greenRange;
 char printBuffer[80];
 
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
@@ -115,11 +116,7 @@ int readToFDistance()
     if (measure.RangeStatus != 4)
     { // We have a valid return value
         range = measure.RangeMilliMeter;
-///Serial.println(range);
-        /*
-        if (range > maxSensorRange)
-            range = maxSensorRange;
-            */
+
         return (range);
     }
     else
@@ -233,13 +230,13 @@ void doRangeCalibration()
                 calibrationNeedsTargetNotice = true; // Only need to say this once per button press
             }
         }
-
+/*
         else if (range < sensorOffset)
         {
             Serial.println("The target is too close to the sensor.  Back it up");
             targetTooCloseNotice = true; // Don't keep saying this
         }
-
+*/
         else
         {
             // Calibration explanation
@@ -261,18 +258,32 @@ void doRangeCalibration()
             delay (100);
 
 
-            redRange = range;
+            redRange = range;  // This is the stop point.  Anything closer than this is medium red.
             // Now that we have the red distance, let's extrapolate the "yellow" and "green" distances.
-            yellowRange = (sensorDelta * 2) + sensorOffset; // Middle 1/3 of neopixel strip
-            greenRange = (sensorDelta * 3) + sensorOffset;  // First 1/3 of neopixel strip
-            maxSensorRange = greenRange;                    // Measurements beyond the green range are clipped to first green LED
+
+
+            int yellowGreenRange = MAXSENSORRANGE - redRange;  //  We have this many mm between start of reliable readings and red stop point
+            yellowRange = redRange + (int)(yellowGreenRange / 2);
+
+
+            //yellowRange = 1000 - sensorOffset
+           
+            greenRange = MAXSENSORRANGE;
+
+            sprintf (printBuffer, "offset: %d  R %d  Y %d  G %d", sensorOffset, redRange, yellowRange, greenRange);
+            Serial.println (printBuffer);
+            delay(10000);
+
+
+
+                         // Measurements beyond the green range are clipped to first green LED
 
             // Use pixelCount to determine how many mm are represented by each lit pixel
-            mmPerLed = (int)((sensorDelta * 3) / PixelCount);
+            mmPerLed = (int)((yellowGreenRange / 2) / PixelCount);
 
-            sprintf(printBuffer, "New values: Red=%d Yellow=%d Green=%d  mmPerLed=%d  max=%d", redRange, yellowRange, greenRange, mmPerLed, maxSensorRange);
+            sprintf(printBuffer, "GY values: Red=%d Yellow=%d Green=%d  mmPerLed=%d  max=%d", redRange, yellowRange, greenRange, mmPerLed);
             Serial.println(printBuffer);
-
+            delay (10000);
             // Show one yellow and one red LED at the target zone.  This is the stop point
             strip.clear();
             strip.setPixelColor((int)(PixelCount * 2 / 3), 32, 0, 0);
@@ -327,7 +338,17 @@ int smooth(int latestValue)
 
 void showRangeOnLedStrip(int rangeValue) // Value is now range in mm, not # of LEDs
 {
-    Serial.print(rangeValue);
+    //Serial.print(rangeValue);
+if (mmPerLed == 0)
+        {
+            Serial.println("Warning: mmPerLed=0.  Substituting 5 to avoid / 0 error  (large PixelCount?)");
+            delay(2000);
+            mmPerLed = 5; ///  Avoid / 0 error
+                          //  We need to show the inverse of the number of LEDs
+                          //                                Below used to be ledDistance
+        }
+
+
 
     if (rangeValue == -1)
     { // Either no target or out of range.  Display nothing
@@ -338,59 +359,50 @@ void showRangeOnLedStrip(int rangeValue) // Value is now range in mm, not # of L
 
     else if (rangeValue < sensorOffset)
     { // Target is dangerously inside the sensorOffset Range
+        strip.clear();
         for (int i = 0; i <= PixelCount; i++)
+            strip.setPixelColor(i, 64, 0, 0); // red
+        strip.show();
+    }
+
+    else if (rangeValue < redRange)
+    { // target is between the calibrated stop point and the sensorOffset point
+            strip.clear();
+        for (int i = 0; i <= PixelCount; i=i+2)
             strip.setPixelColor(i, 32, 0, 0); // red
         strip.show();
     }
 
-    else if (rangeValue != oldValue) //  Draw valid value in G/Y/R range on strip
+    else if (rangeValue < yellowRange ) //  Turn strip yellow, draw # of pixels
     {
-        Serial.println("(New) ");
-        oldValue = rangeValue;
-
-        if (mmPerLed == 0)
-        {
-            Serial.println("Warning: mmPerLed=0.  Substituting 5 to avoid / 0 error  (large PixelCount?)");
-            delay(2000);
-            mmPerLed = 5; ///  Avoid / 0 error
-                          //  We need to show the inverse of the number of LEDs
-                          //                                Below used to be ledDistance
-        }
-        int ledValue = (PixelCount - (int)((range - sensorOffset) / mmPerLed));
-
+        int ledValue = ((int)((yellowRange - range) / mmPerLed));
         if (ledValue < 0)
             ledValue = 0;
 
-        Serial.print("Range: ");
-        Serial.print(rangeValue);
-        Serial.print(" LED: ");
-        Serial.println(ledValue);
-
-        // strip.clear();
-        // strip.show();
-
-        if (ledValue == 0)
-        {
-            Serial.print("There should be NO leds active");
             strip.clear();
-            strip.show();
-        }
-        else // BELOW RANGES SHOULD BE CONFIGURABLE, NO HARD-CODED
-        {
             for (int i = 0; i <= ledValue; i++)
-            {
-                if (i >= (int)(PixelCount * 2 / 3))   // red for upper third
-                    strip.setPixelColor(i, 32, 0, 0); // red
-                else if (i >= (int)(PixelCount / 3))
                     strip.setPixelColor(i, 32, 32, 0); // yellow for middle third
-                else
-                    strip.setPixelColor(i, 0, 32, 0); // green
-                strip.show();
-            }
             for (int i = ledValue; i <= PixelCount; i++)
-                strip.setPixelColor(i, 1, 1, 1); // dull white
-        }
+                strip.setPixelColor(i, 2, 2, 0); // dull yellow
+            strip.show();
+        
     }
+
+   else if (rangeValue < greenRange ) //  Turn strip yellow, draw # of pixels
+    {
+        int ledValue = ((int)((greenRange - range) / mmPerLed));
+        if (ledValue < 0)
+            ledValue = 0;
+
+
+            strip.clear();
+            for (int i = 0; i <= ledValue; i++)
+                    strip.setPixelColor(i, 0, 32, 0); // yellow for middle third
+            for (int i = ledValue; i <= PixelCount; i++)
+                strip.setPixelColor(i, 0, 2, 0); // dull green
+            strip.show();
+    }
+
 }
 
     int address = 0;
@@ -432,8 +444,8 @@ void showRangeOnLedStrip(int rangeValue) // Value is now range in mm, not # of L
             //Serial.print (distanceToTarget);
 
             int smoothedDistance= smooth(distanceToTarget);
-            Serial.print(" S:");
-            Serial.println(smoothedDistance);
+          //  Serial.print(" S:");
+          //  Serial.println(smoothedDistance);
             showRangeOnLedStrip(smoothedDistance);
         }
         else
