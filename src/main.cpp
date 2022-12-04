@@ -11,13 +11,13 @@
 const uint16_t PixelCount = 30;
 const uint16_t PixelPin = D3; 
 const uint16_t CalibrationPin = D0; // Used to set yellow/red transition distance
-const uint16_t MaxRange = 1200;     // Units mm
+
 
 
 int smoothIndex = 0;
 int smoothTotal = 0;              // the running total
 int smoothAverage = 0; 
-const int numReadings = 10;        // Number of readings to average
+const int numReadings = 20;        // Number of readings for smoothing
 
 int readings[numReadings];  //
 
@@ -29,7 +29,7 @@ const int CALIBRATING = 1;
 const int CALIBRATED = 2;
 const int CALFAILURE = 3;
 
-int MAXSENSORRANGE = 1000;  //  Limit of reliable ToF measurement
+int MAXSENSORRANGE = 900;  //  Limit of reliable ToF measurement
 
 int calibrationState = CALIBRATED;  // need to implement checksum that goes into eeprom to decide if this unit has been calibrated.
 
@@ -104,9 +104,6 @@ void readCalibrationValues()
     //EEPROM.end();
 }
 
-// start reading from the first byte (address 0) of the EEPROM
-// Leveraged from here: https://roboticsbackend.com/arduino-store-int-into-eeprom/
-
 
 int readToFDistance()
 {
@@ -133,12 +130,11 @@ void setup()
     {
         delay(1);
     }
+    Serial.println("ToF Parking Assistant\n");
 
-    // When the Calibrate button is pushed, we will set the range to the yellow/red transition point
-    // This inforation will be stored in pseudo-eeprom on the nodemcu
 
-    pinMode(CalibrationPin, INPUT_PULLUP); // set pin to input
-    digitalWrite(CalibrationPin, HIGH);    // turn on pullup resistors
+    pinMode(CalibrationPin, INPUT_PULLUP);  // Calibration button sets the STOP zone. 
+    digitalWrite(CalibrationPin, HIGH);    // turn on pullup resistor
 
     strip.begin(); 
     strip.clear(); 
@@ -146,17 +142,15 @@ void setup()
     EEPROM.begin(EEPROM_SIZE);
 
 
-  // initialize all the readings to 0:
-  for (int thisReading = 0; thisReading < numReadings; thisReading++) {
-    readings[thisReading] = 0;
-  }
+  // initialize the smoothing array to 0
+  for (int i = 0; i < numReadings; i++) 
+    readings[i] = 0;
 
     testStrip();
     delay(200);
 
-    Serial.println("ToF Parking Assistant\n");
 
-    readCalibrationValues();
+    readCalibrationValues();  // Load previous values from EEPROM
     // TODO:  Look for valid checksum of calibration info
     calibrationState = CALIBRATED;
     sprintf (printBuffer, "IN SETUP: EEPROM offset: %d rRange: %d yRange: %d gRange: %d  mmLed: %d", sensorOffset, redRange, yellowRange, greenRange, mmPerLed);
@@ -183,7 +177,7 @@ void setup()
         lox.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
         lox.startRangeContinuous();
     }
-    Serial.print ("      LEAVING THE SETUP ROUTINE.  SENSOR IS CONFIGURED");
+    Serial.println ("Done with Setup routine.  Sensor is configured");
 }
 
 void ledShowNotCalibrated()
@@ -208,10 +202,9 @@ boolean targetTooCloseNotice = false;
 
 void doRangeCalibration()
 {
-    Serial.print("Beginning calibration\n");
+    Serial.println("Beginning calibration");
 
     targetTooCloseNotice = false;
-
     if (calibratingNotice == false) // only need to say this once per button press
     {
         Serial.println("Calibrating ToF Sensor");
@@ -230,32 +223,25 @@ void doRangeCalibration()
                 calibrationNeedsTargetNotice = true; // Only need to say this once per button press
             }
         }
-/*
+
         else if (range < sensorOffset)
         {
             Serial.println("The target is too close to the sensor.  Back it up");
             targetTooCloseNotice = true; // Don't keep saying this
         }
-*/
+
         else
         {
             // Calibration explanation
             // When the user holds the button, a series of measurements set the "stop" zone, and record that in mm.
-            // We want to support different display mechanisms (neopixel, servo, 7-segment, etc), so latest measurement will
+            // We want to support different display mechanisms (neopixel, servo, 7-segment, etc), so stop measurement will
             // always be available in mm
 
-            // For the neopixel strip my implementation uses the last 1/3 of the strip to show (in red) how far you are past the stop point.
-            // Might add a TOO CLOSE indicator like blinking light if range is dangerously close to the sensor.
-            // TODO  Add an offset.  The vehicle SHOULD never be right on top of the sensor chip!!!
-
             int sensorDelta = range - sensorOffset; // Red zone starts at sensorOffset, ends at "range".  This # of mm will be repeated for yellow and green zones
-            Serial.println("BEGINNING CALIBRATION   ");
-            ///Serial.print("Red LEDs will start at: ");
-            Serial.print(range);
-            Serial.print (" ");
- 
 
-            delay (100);
+            //Serial.print(range);
+            //Serial.print (" ");
+            //delay (100);
 
 
             redRange = range;  // This is the stop point.  Anything closer than this is medium red.
@@ -264,32 +250,34 @@ void doRangeCalibration()
 
             int yellowGreenRange = MAXSENSORRANGE - redRange;  //  We have this many mm between start of reliable readings and red stop point
             yellowRange = redRange + (int)(yellowGreenRange / 2);
-
-
-            //yellowRange = 1000 - sensorOffset
            
             greenRange = MAXSENSORRANGE;
 
             sprintf (printBuffer, "offset: %d  R %d  Y %d  G %d", sensorOffset, redRange, yellowRange, greenRange);
             Serial.println (printBuffer);
-            delay(10000);
+            delay(1000);
 
 
 
-                         // Measurements beyond the green range are clipped to first green LED
 
             // Use pixelCount to determine how many mm are represented by each lit pixel
             mmPerLed = (int)((yellowGreenRange / 2) / PixelCount);
 
             sprintf(printBuffer, "GY values: Red=%d Yellow=%d Green=%d  mmPerLed=%d  max=%d", redRange, yellowRange, greenRange, mmPerLed);
             Serial.println(printBuffer);
-            delay (10000);
-            // Show one yellow and one red LED at the target zone.  This is the stop point
+            // Show G/Y/R sequence to indicate calibrating
             strip.clear();
-            strip.setPixelColor((int)(PixelCount * 2 / 3), 32, 0, 0);
-            strip.setPixelColor((int)(PixelCount * 2 / 3) - 1, 32, 32, 0);
+            strip.setPixelColor(0, 32, 0, 0);
             strip.show();
-            delay(100);
+            delay (500);
+            strip.setPixelColor(0, 0, 32, 0);
+            strip.show();
+            delay (500);
+            strip.setPixelColor(0, 0, 0, 32);
+            strip.show();
+            delay (500);
+            strip.clear();
+
             // TODO Wait for calibration button to be released, and write ranges and mmPerLed into pseudo-EEPROM
             // Save tghe calibration value into EEPROM when the button is released.  Otherwise keep re-reading
             calSwitchStatus = digitalRead(CalibrationPin);
@@ -299,9 +287,13 @@ void doRangeCalibration()
                 Serial.println(printBuffer);
                 saveCalibrationValues();
                 calibrationState = CALIBRATED;
+                strip.setPixelColor(0, 32, 32, 32);
+                strip.show();
                 delay(500);
-                readCalibrationValues();
-                delay(1000);
+                strip.clear();
+
+                //readCalibrationValues();
+                //delay(1000);
             }
         }
 }
@@ -317,29 +309,34 @@ int oldValue = -1;
 int smooth(int latestValue)
 {
 
-    smoothTotal = smoothTotal - readings[smoothIndex];
-    // read from the sensor:
-    //if (latestValue < 0)
-    //    latestValue = 0;
-    readings[smoothIndex] = latestValue;
-    smoothTotal = smoothTotal + readings[smoothIndex];
-    // advance to the next position in the array:
-    smoothIndex = smoothIndex + 1;
-    // if we're at the end of the array...
-    if (smoothIndex >= numReadings)
-    {
-        // ...wrap around to the beginning:
-        smoothIndex = 0;
-    }
-    // calculate the average:
-    smoothAverage = smoothTotal / numReadings;
+    if (latestValue == -1)
+        latestValue = MAXSENSORRANGE;
+
+    
+        smoothTotal = smoothTotal - readings[smoothIndex];
+
+        readings[smoothIndex] = latestValue;
+        smoothTotal = smoothTotal + readings[smoothIndex];
+        // advance to the next position in the array:
+        smoothIndex = smoothIndex + 1;
+        // if we're at the end of the array...
+        if (smoothIndex >= numReadings)
+        {
+            // ...wrap around to the beginning:
+            smoothIndex = 0;
+        }
+        // calculate the average:
+        smoothAverage = smoothTotal / numReadings;
+    
+    Serial.print("S: ");
+    Serial.println(smoothAverage);
     return (smoothAverage);
 }
 
 void showRangeOnLedStrip(int rangeValue) // Value is now range in mm, not # of LEDs
 {
     //Serial.print(rangeValue);
-if (mmPerLed == 0)
+if (mmPerLed == 0)  // Safeguard against mmPerLed being 0 by roundoff
         {
             Serial.println("Warning: mmPerLed=0.  Substituting 5 to avoid / 0 error  (large PixelCount?)");
             delay(2000);
@@ -352,7 +349,7 @@ if (mmPerLed == 0)
 
     if (rangeValue == -1)
     { // Either no target or out of range.  Display nothing
-       // Serial.print("STRIP IS BEING ASKED TO SHOW VALUE OF -1");
+        Serial.print("STRIP IS BEING ASKED TO SHOW VALUE OF -1");
         strip.clear();
         strip.show();
     }
@@ -361,12 +358,12 @@ if (mmPerLed == 0)
     { // Target is dangerously inside the sensorOffset Range
         strip.clear();
         for (int i = 0; i <= PixelCount; i++)
-            strip.setPixelColor(i, 64, 0, 0); // red
+            strip.setPixelColor(i, 64, 64, 64); // white....STOP STOP STOP
         strip.show();
     }
 
     else if (rangeValue < redRange)
-    { // target is between the calibrated stop point and the sensorOffset point
+    { // target is between the calibrated stop point and the sensorOffset point.  Every other LED is RED
             strip.clear();
         for (int i = 0; i <= PixelCount; i=i+2)
             strip.setPixelColor(i, 32, 0, 0); // red
@@ -381,9 +378,9 @@ if (mmPerLed == 0)
 
             strip.clear();
             for (int i = 0; i <= ledValue; i++)
-                    strip.setPixelColor(i, 32, 32, 0); // yellow for middle third
+                    strip.setPixelColor(i, 32, 32, 0); // strip is now in yellow mode
             for (int i = ledValue; i <= PixelCount; i++)
-                strip.setPixelColor(i, 2, 2, 0); // dull yellow
+                strip.setPixelColor(i, 2, 2, 0); // dull yellow for "unlit" LEDs
             strip.show();
         
     }
@@ -397,11 +394,16 @@ if (mmPerLed == 0)
 
             strip.clear();
             for (int i = 0; i <= ledValue; i++)
-                    strip.setPixelColor(i, 0, 32, 0); // yellow for middle third
+                    strip.setPixelColor(i, 0, 32, 0); // strip is now in green mode
             for (int i = ledValue; i <= PixelCount; i++)
                 strip.setPixelColor(i, 0, 2, 0); // dull green
             strip.show();
     }
+    else {
+          strip.setPixelColor(0, 0, 0, 32); // Error or nothing in range
+          strip.show();
+    }
+        
 
 }
 
@@ -419,6 +421,8 @@ if (mmPerLed == 0)
             calibrationState = CALIBRATING;
             calibratingNotice = false; //  Soon, set this to True to stop repeating messages
         }
+     
+     
         if (calibrationState == NOTCALIBRATED)
         {
             if (notCalibratedYetNotice == false)
@@ -435,18 +439,21 @@ if (mmPerLed == 0)
         }
         else if (calibrationState == CALIBRATED)
         {
-            // Should have some X millisecond minimum delay here.
+            // Should have some X millisecond minimum delay here based on 8266 RTC
             //  Ranging pings could increase as target gets closer
 
             int distanceToTarget = readToFDistance();
-            // Experimental smoothing function
-            //Serial.print ("distanceToTarget: ");
-            //Serial.print (distanceToTarget);
-
-            int smoothedDistance= smooth(distanceToTarget);
-          //  Serial.print(" S:");
-          //  Serial.println(smoothedDistance);
-            showRangeOnLedStrip(smoothedDistance);
+            if (distanceToTarget != -1) { 
+                int smoothedDistance= smooth(distanceToTarget);
+                //  Serial.print(" S:");
+                //  Serial.println(smoothedDistance);
+                showRangeOnLedStrip(smoothedDistance);
+            }
+            else {
+                strip.clear();
+                strip.setPixelColor (0, 0,0,12);
+                strip.show();
+            }
         }
         else
             ledShowCalibrationFailure();
